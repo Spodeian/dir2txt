@@ -1,6 +1,6 @@
 use dir2txt::*;
-use std::fs;
 use tempfile::tempdir;
+
 
 #[test]
 #[cfg(unix)] // Permission tests are most reliable on Unix
@@ -40,4 +40,12 @@ fn test_missing_file_during_lazy_load() {
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn test_lazy_file_uninitialized_error() {
+    let file = LazyFile::new("test.txt".to_string());
+    // Serialization should fail because content is not loaded
+    let result = serde_json::to_string(&file);
+    assert!(result.is_err());
 }

@@ -90,14 +90,17 @@ impl LazyFile {
     /// Loads the file content into memory.
     ///
     /// This method is idempotent; if content is already loaded, it returns `Ok(())`.
-    /// Binary files are skipped gracefully to prevent memory bloat during recursive
-    /// processing of robotics datasets or build artifacts.
+    /// Binary files are skipped gracefully
     pub fn load_content<P: AsRef<Path>>(&self, parent_path: P) -> Result<(), std::io::Error> {
-        if self.is_text_ready() {
+        if self.content.get().is_some() {
             return Ok(());
         }
 
-        if self.get_is_text().is_some_and(|b| !b) {
+        if let Some(false) = self.get_is_text() {
+            if self.content.get().is_none() {
+                let _ = self.set_content(None);
+            }
+
             return Ok(());
         }
 
@@ -117,10 +120,14 @@ impl LazyFile {
                 Ok(())
             },
             Some(false) => {
+                if self.content.get().is_none() {
+                    let _ = self.set_content(None);
+                }
+
                 Ok(())
             },
             None => {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "is_text state mismatch"))
+                Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to update is_text"))
             },
         }
     }
@@ -209,10 +216,12 @@ impl Directory {
         parent_path.as_ref().join(&self.name)
     }
 
-    /// Ingests a filesystem path into a `Directory` tree.
+    /// Ingests a filesystem path into and creates a slimmed tree structure
+    /// representing the directory and its contents, but ignoring non-utf8
+    /// files and empty directories.
     ///
-    /// If `lazy` is true, file contents are not read during ingestion.
-    pub fn from_path<P: AsRef<Path>>(path: P, lazy: bool) -> std::io::Result<Self> {
+    /// If `lazy` is true, file contents are not loaded during ingestion.
+    pub fn from_path_slimmed<P: AsRef<Path>>(path: P, lazy: bool) -> std::io::Result<Self> {
         let path = path.as_ref();
         let name = path
             .file_name()
@@ -223,27 +232,30 @@ impl Directory {
 
         if path.is_dir() {
             for entry in fs::read_dir(path)? {
-                let entry = entry?;
-                let entry_path = entry.path();
+                let Ok(entry) = entry else { continue };
+                let entry_type = entry.file_type()?;
 
-                if entry_path.is_dir() {
-                    current_dir.directories.push(Self::from_path(&entry_path, lazy)?);
-                } else if entry_path.is_file() {
-                    let file_name = entry_path
-                        .file_name()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-
-                    let file = LazyFile::new(file_name);
+                if entry_type.is_dir() {
+                    let dir = Self::from_path_slimmed(entry.path(), lazy)?;
+                    if !dir.is_empty() { current_dir.directories.push(dir) }
+                } else if entry_type.is_file() {
+                    let file = LazyFile::new(entry.file_name().to_string_lossy().into_owned());
 
                     if !lazy {
                         // Tell the file to load itself using the current path context
-                        let _ = file.load_content(path);
+                        file.load_content(path)?;
+                    } else {
+                        let mut reader = fs::File::open(entry.path())?;
+                        file.set_is_text(&mut reader)?;
                     }
 
-                    current_dir.files.push(file);
+                    if file.get_is_text().unwrap_or(true) {
+                        current_dir.files.push(file);
+                    }
                 }
             }
+        } else {
+            return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Path is not a directory"));
         }
 
         Ok(current_dir)
@@ -251,12 +263,13 @@ impl Directory {
 
     /// Recursively triggers `load_content` for all files in the tree.
     pub fn load_recursive<P: AsRef<Path>>(&self, parent_path: P) -> std::io::Result<()> {
-        let parent_path = parent_path.as_ref();
-        self.load_local_files(parent_path)?;
+        let path = self.path(parent_path.as_ref());
+        for file in &self.files {
+            file.load_content(&path)?;
+        }
         // Recurse into subdirectories
         for dir in &self.directories {
-            let dir_path = parent_path.join(&dir.name);
-            dir.load_recursive(&dir_path)?;
+            dir.load_recursive(&path)?;
         }
 
         Ok(())
@@ -264,10 +277,9 @@ impl Directory {
 
     /// Loads content for files only in the immediate directory level.
     pub fn load_local_files<P: AsRef<Path>>(&self, parent_path: P) -> std::io::Result<()> {
-        let parent_path = parent_path.as_ref();
+        let path = self.path(parent_path);
         for file in &self.files {
-            // Pass parent_path directly; file.load_content will join the name.
-            file.load_content(parent_path)?;
+            file.load_content(&path)?;
         }
 
         Ok(())
@@ -285,7 +297,11 @@ impl Directory {
     pub fn prune(&mut self, default: bool) -> bool {
         self.files.retain(|f| f.prune(default));
         self.directories.retain_mut(|dir| dir.prune(default));
-        !(self.directories.is_empty() && self.files.is_empty())
+        !self.is_empty()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.directories.is_empty() && self.files.is_empty()
     }
 
     /// Alphabetically sorts files and subdirectories.

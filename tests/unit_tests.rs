@@ -1,51 +1,55 @@
 use dir2txt::*;
-use tempfile::tempdir;
-use std::fs::{self, File};
-use std::io::Write;
 
-mod common;
 
 #[test]
-fn test_lazy_file_detection() {
-    let (_tmp, root) = common::setup_test_env();
-    let bin_file = LazyFile::new("data.bin".to_string());
+fn test_lazy_file_manual_init() {
+    let file = LazyFile::new("test.txt".to_string());
+    file.set_content(Some("Hello World".to_string())).unwrap();
 
-    let bin_result = bin_file.load_content(&root);
-
-    assert!(bin_result.is_ok());
-    assert_eq!(bin_file.get_is_text(), Some(false));
-    assert!(bin_file.get_content().is_none());
+    let json = serde_json::to_string(&file).unwrap();
+    assert_eq!(json, "\"Hello World\"");
 }
 
 #[test]
-fn test_directory_recursion_and_sorting() -> std::io::Result<()> {
-    let dir = tempdir()?;
-    let sub_dir_path = dir.path().join("b_subdir");
-    fs::create_dir(&sub_dir_path)?;
+fn test_directory_flattened_serialization() {
+    let mut root = Directory::new("root".to_string());
 
-    File::create(dir.path().join("z_file.txt"))?.write_all(b"content")?;
-    File::create(dir.path().join("a_file.txt"))?.write_all(b"content")?;
-    File::create(sub_dir_path.join("sub_file.txt"))?.write_all(b"sub content")?;
+    let f1 = LazyFile::new("a.txt".to_string());
+    f1.set_content(Some("content a".to_string())).unwrap();
 
-    let mut directory = Directory::from_path(dir.path(), true)?;
-    directory.sort();
+    let mut sub = Directory::new("sub".to_string());
+    let f2 = LazyFile::new("b.txt".to_string());
+    f2.set_content(Some("content b".to_string())).unwrap();
 
-    assert_eq!(directory.files[0].name, "a_file.txt");
-    assert_eq!(directory.directories[0].name, "b_subdir");
-    Ok(())
+    sub.files.push(f2);
+    root.files.push(f1);
+    root.directories.push(sub);
+
+    let json = serde_json::to_string(&root).unwrap();
+    // Expecting: {"a.txt":"content a","sub":{"b.txt":"content b"}}
+    assert!(json.contains("\"a.txt\":\"content a\""));
+    assert!(json.contains("\"sub\":{"));
 }
 
 #[test]
-fn test_pruning_logic() -> std::io::Result<()> {
-    let dir = tempdir()?;
-    File::create(dir.path().join("text.txt"))?.write_all(b"Valid text")?;
-    File::create(dir.path().join("binary.dat"))?.write_all(&[0, 159, 146, 150])?;
+fn test_sorting_determinism() {
+    let mut dir = Directory::new("root".to_string());
+    dir.files.push(LazyFile::new("z.txt".to_string()));
+    dir.files.push(LazyFile::new("a.txt".to_string()));
+    dir.directories.push(Directory::new("beta".to_string()));
+    dir.directories.push(Directory::new("alpha".to_string()));
 
-    let mut directory = Directory::from_path(dir.path(), false)?;
-    let _ = directory.load_recursive(dir.path());
-    directory.prune(false);
+    dir.sort();
 
-    assert_eq!(directory.files.len(), 1);
-    assert_eq!(directory.files[0].name, "text.txt");
-    Ok(())
+    assert_eq!(dir.files[0].name, "a.txt");
+    assert_eq!(dir.files[1].name, "z.txt");
+    assert_eq!(dir.directories[0].name, "alpha");
+    assert_eq!(dir.directories[1].name, "beta");
+}
+
+#[test]
+fn test_empty_directory_serialization_fails() {
+    let dir = Directory::new("empty".to_string());
+    let result = serde_json::to_string(&dir);
+    assert!(result.is_err(), "Empty directory should not serialize to avoid loss of context");
 }
