@@ -51,10 +51,13 @@ The output is serialized as a nested map, where directory names are keys to chil
 
 ```json
 {
+  "config.toml": "[settings]\nversion = 1",
   "src": {
     "main.rs": "fn main() { ... }",
-    "utils.rs": "// Utility code"
+    "lib.rs": "mod stuff;\nmod more;"
   },
-  "config.toml": "[settings]\nversion = 1"
+  "tests": {
+    "unit_tests.rs": "#[test]\nfn test() { ... }"
+  }
 }
 ```
