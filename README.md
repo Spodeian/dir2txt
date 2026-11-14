@@ -61,3 +61,10 @@ The output is serialized as a nested map, where directory names are keys to chil
   }
 }
 ```
+
+---
+
+## License
+
+Released into the public domain under [the Unlicense](LICENSE). Earlier
+releases were dedicated under CC0 1.0 and stay that way.

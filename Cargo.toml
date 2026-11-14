@@ -2,6 +2,7 @@
 name = "dir2txt"
 version = "0.3.0"
 edition = "2024"
+license = "Unlicense"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
